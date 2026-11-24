@@ -46,8 +46,9 @@ CREATE INDEX IF NOT EXISTS idx_live_app_time ON live_updates(app_id, polled_at D
 -- Penampung data untuk mode replay (struktur sama dengan recommendations, tanpa FK).
 CREATE TABLE IF NOT EXISTS replay_buffer (LIKE recommendations INCLUDING DEFAULTS);
 
--- View utama dasbor (satu-satunya definisi is_hidden_gem sesuai D-3).
-CREATE OR REPLACE VIEW game_stats AS
+-- Materialized View utama dasbor (satu-satunya definisi is_hidden_gem sesuai D-3).
+-- Dikonversi dari VIEW biasa ke MATERIALIZED VIEW pada T5 setelah EXPLAIN ANALYZE > 1 detik pada data penuh.
+CREATE MATERIALIZED VIEW IF NOT EXISTS game_stats AS
 WITH med AS (
     SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY total_reviews) AS median_reviews FROM games
 )
@@ -62,3 +63,8 @@ FROM games g
 CROSS JOIN med
 LEFT JOIN recommendations r ON r.app_id = g.app_id
 GROUP BY g.app_id, med.median_reviews;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_game_stats_app_id
+    ON game_stats(app_id);
+CREATE INDEX IF NOT EXISTS idx_game_stats_hidden_gem
+    ON game_stats(is_hidden_gem, positive_ratio DESC, total_reviews DESC);

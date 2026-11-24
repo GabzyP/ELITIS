@@ -1,0 +1,1 @@
+AC-08 : "200 dokumen, seluruhnya ok via CDN; jalur fallback appdetails dan status missing terimplementasi sesuai ETL-06 namun tidak terpicu pada run penuh karena seluruh game D-4 memiliki header CDN."

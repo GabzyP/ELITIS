@@ -24,6 +24,17 @@ GAMES_USECOLS = [
 
 USERS_USECOLS = ["user_id", "products", "reviews"]
 
+RECOMMENDATIONS_USECOLS = [
+    "app_id",
+    "helpful",
+    "funny",
+    "date",
+    "is_recommended",
+    "hours",
+    "user_id",
+    "review_id",
+]
+
 
 def iter_metadata_jsonl(path: Path) -> Iterator[tuple[int, dict[str, Any] | None, str | None]]:
     """Baca games_metadata.json secara streaming per baris (JSON Lines, UTF-8).
@@ -76,6 +87,22 @@ def iter_users_chunks(path: Path, chunk_size: int) -> Iterator[pd.DataFrame]:
         chunksize=chunk_size,
         usecols=USERS_USECOLS,
         dtype={col: "string" for col in USERS_USECOLS},
+        encoding="utf-8",
+        na_filter=False,
+    )
+    yield from reader
+
+
+def iter_recommendations_chunks(path: Path, chunk_size: int) -> Iterator[pd.DataFrame]:
+    """Baca berkas recommendations.csv per chunk (UTF-8) tanpa memuat seluruh berkas ke memori."""
+    if not path.exists():
+        raise FileNotFoundError(f"Berkas recommendations.csv tidak ditemukan: {path}")
+
+    reader = pd.read_csv(
+        path,
+        chunksize=chunk_size,
+        usecols=RECOMMENDATIONS_USECOLS,
+        dtype={col: "string" for col in RECOMMENDATIONS_USECOLS},
         encoding="utf-8",
         na_filter=False,
     )

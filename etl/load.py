@@ -45,6 +45,15 @@ def write_etl_log(mongo_db: Database, log_doc: dict[str, Any]) -> None:
     mongo_db["etl_logs"].insert_one(log_doc)
 
 
+def upsert_etl_log(mongo_db: Database, log_doc: dict[str, Any]) -> None:
+    """Perbarui atau sisipkan satu dokumen log eksekusi berdasarkan `(run_id, stage)`."""
+    mongo_db["etl_logs"].update_one(
+        {"run_id": log_doc["run_id"], "stage": log_doc["stage"]},
+        {"$set": log_doc},
+        upsert=True,
+    )
+
+
 def upsert_games_copy(conn: psycopg.Connection, rows: list[tuple[Any, ...]]) -> int:
     """Muat daftar game terfilter ke PostgreSQL menggunakan COPY ke temp table + ON CONFLICT."""
     if not rows:
@@ -138,3 +147,113 @@ def upsert_users_copy(conn: psycopg.Connection, rows: list[tuple[int, int, int]]
                 """
             )
     return len(rows)
+
+
+def upsert_recommendations_copy(
+    conn: psycopg.Connection,
+    rows: list[tuple[Any, ...]],
+) -> tuple[int, int, dict[str, int]]:
+    """Muat satu chunk recommendations via COPY ke temp table + ON CONFLICT (review_id) DO NOTHING.
+
+    Mengembalikan `(rows_valid_fk, rows_newly_inserted, fk_discard_reasons)`.
+    """
+    if not rows:
+        return 0, 0, {}
+
+    with conn.transaction():
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                CREATE TEMP TABLE tmp_recommendations (
+                    review_id      BIGINT,
+                    user_id        BIGINT,
+                    app_id         BIGINT,
+                    is_recommended BOOLEAN,
+                    hours_played   NUMERIC(10,2),
+                    review_date    DATE,
+                    helpful        INTEGER,
+                    funny          INTEGER
+                ) ON COMMIT DROP;
+                """
+            )
+            with cur.copy(
+                """
+                COPY tmp_recommendations (
+                    review_id, user_id, app_id, is_recommended,
+                    hours_played, review_date, helpful, funny
+                ) FROM STDIN
+                """
+            ) as copy:
+                for row in rows:
+                    copy.write_row(row)
+
+            cur.execute("ANALYZE tmp_recommendations;")
+            cur.execute(
+                """
+                SELECT
+                    COUNT(*) FILTER (WHERE u.user_id IS NULL) AS missing_user,
+                    COUNT(*) FILTER (WHERE u.user_id IS NOT NULL AND g.app_id IS NULL) AS missing_game
+                FROM tmp_recommendations t
+                LEFT JOIN users u ON u.user_id = t.user_id
+                LEFT JOIN games g ON g.app_id = t.app_id;
+                """
+            )
+            missing_user, missing_game = cur.fetchone()
+            missing_user = int(missing_user or 0)
+            missing_game = int(missing_game or 0)
+
+            cur.execute(
+                """
+                INSERT INTO recommendations (
+                    review_id, user_id, app_id, is_recommended,
+                    hours_played, review_date, helpful, funny
+                )
+                SELECT
+                    t.review_id, t.user_id, t.app_id, t.is_recommended,
+                    t.hours_played, t.review_date, t.helpful, t.funny
+                FROM tmp_recommendations t
+                INNER JOIN users u ON u.user_id = t.user_id
+                INNER JOIN games g ON g.app_id = t.app_id
+                ON CONFLICT (review_id) DO NOTHING;
+                """
+            )
+            newly_inserted = max(int(cur.rowcount or 0), 0)
+
+    fk_reasons: dict[str, int] = {}
+    if missing_user:
+        fk_reasons["missing_user"] = missing_user
+    if missing_game:
+        fk_reasons["missing_game"] = missing_game
+
+    valid_loaded = len(rows) - missing_user - missing_game
+    return valid_loaded, newly_inserted, fk_reasons
+
+
+def get_tracked_app_ids(conn: psycopg.Connection, limit: int) -> list[int]:
+    """Ambil daftar app_id teratas sesuai definisi D-4 dari `game_stats` secara stabil."""
+    if limit <= 0:
+        return []
+
+    query = """
+        SELECT app_id
+        FROM game_stats
+        ORDER BY
+            COALESCE(is_hidden_gem, FALSE) DESC,
+            CASE WHEN is_hidden_gem THEN positive_ratio END DESC NULLS LAST,
+            CASE WHEN is_hidden_gem THEN total_reviews END DESC NULLS LAST,
+            CASE WHEN NOT COALESCE(is_hidden_gem, FALSE) THEN total_recommendations END DESC NULLS LAST,
+            app_id ASC
+        LIMIT %s;
+    """
+    with conn.cursor() as cur:
+        cur.execute(query, (limit,))
+        return [int(row[0]) for row in cur.fetchall()]
+
+
+def upsert_game_media_doc(mongo_db: Database, media_doc: dict[str, Any]) -> None:
+    """Upsert satu dokumen media game ke koleksi `game_media` berdasarkan `app_id`."""
+    mongo_db["game_media"].replace_one(
+        {"app_id": media_doc["app_id"]},
+        media_doc,
+        upsert=True,
+    )

@@ -19,17 +19,28 @@ from etl.config import (
     get_settings,
     resolve_source_path,
 )
-from etl.extract import iter_metadata_jsonl, iter_users_chunks, read_games_csv
+from etl.enrichment import RateLimiter, create_steam_session, enrich_single_game
+from etl.extract import (
+    iter_metadata_jsonl,
+    iter_recommendations_chunks,
+    iter_users_chunks,
+    read_games_csv,
+)
 from etl.load import (
     get_indie_cohort,
+    get_tracked_app_ids,
+    upsert_etl_log,
+    upsert_game_media_doc,
     upsert_games_copy,
     upsert_metadata_batch,
+    upsert_recommendations_copy,
     upsert_users_copy,
     write_etl_log,
 )
 from etl.transform import (
     transform_games_df,
     transform_metadata_record,
+    transform_recommendations_chunk,
     transform_users_chunk,
 )
 
@@ -355,6 +366,252 @@ def run_users_stage(
     }
 
 
+def run_recommendations_stage(
+    settings: Settings | None = None,
+    sample: bool = False,
+    run_id: str | None = None,
+    log_every_chunks: int = 10,
+) -> dict[str, Any]:
+    """Jalankan ETL-04: streaming `recommendations.csv` per chunk, filter kohort, COPY + ON CONFLICT."""
+    cfg = settings or get_settings()
+    source_path = resolve_source_path("recommendations.csv", sample=sample, settings=cfg)
+    source_label = _relative_source_label(source_path)
+    active_run_id = run_id or str(uuid.uuid4())
+    started_at = datetime.now(timezone.utc)
+    perf_start = time.perf_counter()
+
+    rows_read = 0
+    rows_loaded = 0
+    rows_discarded = 0
+    total_newly_inserted = 0
+    chunks_processed = 0
+    discard_counter: Counter[str] = Counter()
+
+    mongo_client, mongo_db = get_mongo_db(cfg)
+    pg_conn = None
+    cohort_size = 0
+
+    def _build_log_doc(status: str, elapsed_s: float, error_msg: str | None = None) -> dict[str, Any]:
+        notes_parts = [
+            f"sample={str(sample).lower()}",
+            f"chunk_size={cfg.chunk_size}",
+            f"cohort_indie={cohort_size}",
+            f"chunks={chunks_processed}",
+            f"newly_inserted={total_newly_inserted}",
+            f"elapsed_s={elapsed_s:.2f}",
+            _format_discard_notes(dict(discard_counter)),
+        ]
+        if error_msg:
+            notes_parts.append(f"error={error_msg}")
+        return {
+            "run_id": active_run_id,
+            "stage": "recommendations",
+            "started_at": started_at,
+            "finished_at": datetime.now(timezone.utc),
+            "source_file": source_label,
+            "rows_read": rows_read,
+            "rows_loaded": rows_loaded,
+            "rows_discarded": rows_discarded,
+            "status": status,
+            "notes": "; ".join(notes_parts),
+        }
+
+    try:
+        cohort = get_indie_cohort(mongo_db)
+        if not cohort:
+            raise RuntimeError(
+                "Kohort Indie di MongoDB kosong. Jalankan '--stage metadata' terlebih dahulu."
+            )
+        cohort_size = len(cohort)
+
+        pg_conn = get_pg_connection(cfg)
+        for chunk_df in iter_recommendations_chunks(source_path, chunk_size=cfg.chunk_size):
+            chunks_processed += 1
+            chunk_start = time.perf_counter()
+
+            chunk_rows, chunk_read, transform_reasons = transform_recommendations_chunk(
+                chunk_df, cohort
+            )
+            chunk_loaded, chunk_inserted, fk_reasons = upsert_recommendations_copy(
+                pg_conn, chunk_rows
+            )
+
+            chunk_reasons: Counter[str] = Counter(transform_reasons)
+            chunk_reasons.update(fk_reasons)
+            chunk_discarded = sum(chunk_reasons.values())
+
+            rows_read += chunk_read
+            rows_loaded += chunk_loaded
+            rows_discarded += chunk_discarded
+            total_newly_inserted += chunk_inserted
+            discard_counter.update(chunk_reasons)
+
+            elapsed = max(time.perf_counter() - chunk_start, 1e-6)
+            rate = chunk_read / elapsed
+            print(
+                f"[recommendations] chunk={chunks_processed} chunk_read={chunk_read} "
+                f"chunk_loaded={chunk_loaded} chunk_discarded={chunk_discarded} "
+                f"rate={rate:,.0f} rows/s"
+            )
+
+            if log_every_chunks > 0 and chunks_processed % log_every_chunks == 0:
+                upsert_etl_log(
+                    mongo_db,
+                    _build_log_doc("partial", time.perf_counter() - perf_start),
+                )
+
+        with pg_conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM recommendations;")
+            pg_recommendations_count = int(cur.fetchone()[0])
+    except Exception as exc:
+        upsert_etl_log(
+            mongo_db,
+            _build_log_doc(
+                "failed",
+                time.perf_counter() - perf_start,
+                error_msg=f"{type(exc).__name__}: {exc}",
+            ),
+        )
+        if pg_conn is not None:
+            pg_conn.close()
+        mongo_client.close()
+        raise
+
+    total_elapsed = max(time.perf_counter() - perf_start, 1e-6)
+    log_doc = _build_log_doc("success", total_elapsed)
+    upsert_etl_log(mongo_db, log_doc)
+
+    pg_conn.close()
+    mongo_client.close()
+
+    print(
+        f"[recommendations] run_id={active_run_id} source={source_label} "
+        f"chunks={chunks_processed} rows_read={rows_read} rows_loaded={rows_loaded} "
+        f"rows_discarded={rows_discarded} newly_inserted={total_newly_inserted} "
+        f"pg_recommendations_total={pg_recommendations_count} elapsed={total_elapsed:.2f}s "
+        f"{_format_discard_notes(dict(discard_counter))}"
+    )
+
+    return {
+        "log": log_doc,
+        "discard_reasons": dict(discard_counter),
+        "pg_recommendations_count": pg_recommendations_count,
+        "newly_inserted": total_newly_inserted,
+        "elapsed_seconds": total_elapsed,
+    }
+
+
+def run_enrichment_stage(
+    settings: Settings | None = None,
+    limit: int | None = None,
+    run_id: str | None = None,
+) -> dict[str, Any]:
+    """Jalankan ETL-06: enrichment foto Steam untuk daftar D-4 ke MongoDB `game_media`."""
+    cfg = settings or get_settings()
+    target_limit = cfg.tracked_limit if limit is None else limit
+    active_run_id = run_id or str(uuid.uuid4())
+    started_at = datetime.now(timezone.utc)
+    perf_start = time.perf_counter()
+
+    rows_read = 0
+    rows_loaded = 0
+    rows_discarded = 0
+    outcome_counts: Counter[str] = Counter()
+    results_summary: list[tuple[int, str]] = []
+
+    mongo_client, mongo_db = get_mongo_db(cfg)
+    pg_conn = None
+    session = create_steam_session()
+
+    def _build_log_doc(status: str, elapsed_s: float, error_msg: str | None = None) -> dict[str, Any]:
+        notes_parts = [
+            f"tracked_limit={target_limit}",
+            f"upserted_total={rows_read}",
+            f"ok_cdn={outcome_counts['ok_cdn']}",
+            f"ok_appdetails={outcome_counts['ok_appdetails']}",
+            f"missing={outcome_counts['missing']}",
+            f"elapsed_s={elapsed_s:.2f}",
+        ]
+        if error_msg:
+            notes_parts.append(f"error={error_msg}")
+        return {
+            "run_id": active_run_id,
+            "stage": "enrichment",
+            "started_at": started_at,
+            "finished_at": datetime.now(timezone.utc),
+            "source_file": "game_stats (D-4)",
+            "rows_read": rows_read,
+            "rows_loaded": rows_loaded,
+            "rows_discarded": rows_discarded,
+            "status": status,
+            "notes": "; ".join(notes_parts),
+        }
+
+    try:
+        pg_conn = get_pg_connection(cfg)
+        app_ids = get_tracked_app_ids(pg_conn, limit=target_limit)
+        limiter = RateLimiter(cfg.steam_api_delay_seconds)
+
+        for idx, app_id in enumerate(app_ids, start=1):
+            rows_read += 1
+            media_doc, outcome = enrich_single_game(session, app_id, limiter)
+            upsert_game_media_doc(mongo_db, media_doc)
+
+            outcome_counts[outcome] += 1
+            if outcome in {"ok_cdn", "ok_appdetails"}:
+                rows_loaded += 1
+            else:
+                rows_discarded += 1
+
+            label = {
+                "ok_cdn": "ok via CDN",
+                "ok_appdetails": "ok via appdetails",
+                "missing": "missing",
+            }[outcome]
+            results_summary.append((app_id, label))
+            print(f"[enrichment] ({idx}/{len(app_ids)}) app_id={app_id} status={label}")
+
+        game_media_total = mongo_db["game_media"].count_documents({})
+    except Exception as exc:
+        write_etl_log(
+            mongo_db,
+            _build_log_doc(
+                "failed",
+                time.perf_counter() - perf_start,
+                error_msg=f"{type(exc).__name__}: {exc}",
+            ),
+        )
+        session.close()
+        if pg_conn is not None:
+            pg_conn.close()
+        mongo_client.close()
+        raise
+
+    total_elapsed = max(time.perf_counter() - perf_start, 1e-6)
+    final_status = "partial" if outcome_counts["missing"] > 0 else "success"
+    log_doc = _build_log_doc(final_status, total_elapsed)
+    write_etl_log(mongo_db, log_doc)
+
+    session.close()
+    pg_conn.close()
+    mongo_client.close()
+
+    print(
+        f"[enrichment] run_id={active_run_id} tracked={rows_read} "
+        f"ok_cdn={outcome_counts['ok_cdn']} ok_appdetails={outcome_counts['ok_appdetails']} "
+        f"missing={outcome_counts['missing']} game_media_total={game_media_total} "
+        f"status={final_status} elapsed={total_elapsed:.2f}s"
+    )
+
+    return {
+        "log": log_doc,
+        "results": results_summary,
+        "outcome_counts": dict(outcome_counts),
+        "game_media_total": game_media_total,
+        "elapsed_seconds": total_elapsed,
+    }
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="ELITIS ETL Pipeline CLI")
     parser.add_argument(
@@ -367,6 +624,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--sample",
         action="store_true",
         help="Baca berkas sumber dari data/samples/ alih-alih data/incoming/.",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Batas opsional jumlah game D-4 (mis. untuk uji parsial --stage enrichment).",
     )
     return parser
 
@@ -384,9 +647,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.stage == "users":
         run_users_stage(sample=args.sample)
         return 0
+    if args.stage == "recommendations":
+        run_recommendations_stage(sample=args.sample)
+        return 0
+    if args.stage == "enrichment":
+        run_enrichment_stage(limit=args.limit)
+        return 0
 
     print(
-        f"Tahap '--stage {args.stage}' belum diimplementasikan (dikerjakan pada T4-T8).",
+        f"Tahap '--stage {args.stage}' belum diimplementasikan (dikerjakan pada T7-T8).",
         file=sys.stderr,
     )
     return 1

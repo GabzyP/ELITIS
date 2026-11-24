@@ -206,3 +206,90 @@ def transform_users_chunk(
         rows.append((user_id, total_products, total_reviews))
 
     return rows, rows_read, dict(reasons)
+
+
+def transform_recommendations_chunk(
+    df: pd.DataFrame,
+    cohort: set[int],
+) -> tuple[list[tuple[Any, ...]], int, dict[str, int]]:
+    """Transformasi dan filter satu chunk `recommendations.csv` terhadap kohort Indie."""
+    rows: list[tuple[Any, ...]] = []
+    seen_review_ids: set[int] = set()
+    reasons: Counter[str] = Counter()
+    rows_read = len(df)
+
+    for record in df.itertuples(index=False):
+        app_id = parse_valid_app_id(record.app_id)
+        if app_id is None:
+            reasons["invalid_app_id"] += 1
+            continue
+
+        if app_id not in cohort:
+            reasons["not_in_cohort"] += 1
+            continue
+
+        review_id = _parse_non_negative_int(record.review_id, default=-1)
+        if review_id is None or review_id < 0:
+            reasons["invalid_review_id"] += 1
+            continue
+
+        if review_id in seen_review_ids:
+            reasons["duplicate_review_id_in_chunk"] += 1
+            continue
+        seen_review_ids.add(review_id)
+
+        user_id = _parse_non_negative_int(record.user_id, default=-1)
+        if user_id is None or user_id < 0:
+            reasons["invalid_user_id"] += 1
+            continue
+
+        rec_text = str(record.is_recommended).strip().lower()
+        if rec_text == "true":
+            is_recommended = True
+        elif rec_text == "false":
+            is_recommended = False
+        else:
+            reasons["invalid_is_recommended"] += 1
+            continue
+
+        hours_text = str(record.hours).strip()
+        if not hours_text:
+            hours_played = None
+        else:
+            try:
+                hours_played = Decimal(hours_text).quantize(
+                    Decimal("0.01"), rounding=ROUND_HALF_UP
+                )
+            except (InvalidOperation, ValueError):
+                reasons["invalid_hours_played"] += 1
+                continue
+            if hours_played < Decimal("0"):
+                reasons["invalid_hours_played"] += 1
+                continue
+
+        try:
+            review_date = _parse_iso_date(record.date)
+        except ValueError:
+            reasons["invalid_review_date"] += 1
+            continue
+
+        helpful = _parse_non_negative_int(record.helpful, default=0)
+        funny = _parse_non_negative_int(record.funny, default=0)
+        if helpful is None or funny is None:
+            reasons["invalid_helpful_funny"] += 1
+            continue
+
+        rows.append(
+            (
+                review_id,
+                user_id,
+                app_id,
+                is_recommended,
+                hours_played,
+                review_date,
+                helpful,
+                funny,
+            )
+        )
+
+    return rows, rows_read, dict(reasons)
