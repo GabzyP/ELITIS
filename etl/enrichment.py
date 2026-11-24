@@ -98,12 +98,12 @@ def _check_cdn_header(
     return None
 
 
-def _fetch_appdetails_media(
+def fetch_appdetails_data(
     session: requests.Session,
     app_id: int,
     limiter: RateLimiter,
-) -> tuple[str, str, list[str]] | None:
-    """Ambil metadata media dari Steam Store API appdetails untuk satu app_id."""
+) -> dict[str, Any] | None:
+    """Ambil objek `data` dari Steam Store API appdetails untuk satu `app_id`, atau None."""
     resp = _request_with_backoff(
         session,
         "GET",
@@ -130,7 +130,17 @@ def _fetch_appdetails_media(
         return None
 
     data = entry.get("data")
-    if not isinstance(data, dict):
+    return data if isinstance(data, dict) else None
+
+
+def _fetch_appdetails_media(
+    session: requests.Session,
+    app_id: int,
+    limiter: RateLimiter,
+) -> tuple[str, str, list[str]] | None:
+    """Ambil metadata media dari Steam Store API appdetails untuk satu app_id."""
+    data = fetch_appdetails_data(session, app_id, limiter)
+    if data is None:
         return None
 
     header_url = str(data.get("header_image") or "").strip()

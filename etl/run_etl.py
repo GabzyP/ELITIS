@@ -37,6 +37,7 @@ from etl.load import (
     upsert_users_copy,
     write_etl_log,
 )
+from etl.live_polling import run_polling_round
 from etl.transform import (
     transform_games_df,
     transform_metadata_record,
@@ -653,9 +654,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.stage == "enrichment":
         run_enrichment_stage(limit=args.limit)
         return 0
+    if args.stage == "polling":
+        run_polling_round(limit=args.limit)
+        return 0
 
     print(
-        f"Tahap '--stage {args.stage}' belum diimplementasikan (dikerjakan pada T7-T8).",
+        f"Tahap '--stage {args.stage}' belum diimplementasikan (dikerjakan pada T8).",
         file=sys.stderr,
     )
     return 1

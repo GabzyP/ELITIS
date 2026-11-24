@@ -257,3 +257,57 @@ def upsert_game_media_doc(mongo_db: Database, media_doc: dict[str, Any]) -> None
         media_doc,
         upsert=True,
     )
+
+
+def record_live_poll_update(
+    conn: psycopg.Connection,
+    app_id: int,
+    price_usd: Any,
+    steam_recommendations: int | None,
+) -> None:
+    """Simpan observasi live_updates dan perbarui games.price_usd + updated_at (tanpa total_reviews)."""
+    with conn.transaction():
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO live_updates (app_id, price_usd, steam_recommendations)
+                VALUES (%s, %s, %s);
+                """,
+                (app_id, price_usd, steam_recommendations),
+            )
+            if price_usd is not None:
+                cur.execute(
+                    """
+                    UPDATE games
+                    SET price_usd = %s, updated_at = now()
+                    WHERE app_id = %s;
+                    """,
+                    (price_usd, app_id),
+                )
+            else:
+                cur.execute(
+                    """
+                    UPDATE games
+                    SET updated_at = now()
+                    WHERE app_id = %s;
+                    """,
+                    (app_id,),
+                )
+
+
+def refresh_game_stats(conn: psycopg.Connection, concurrently: bool = True) -> None:
+    """Refresh materialized view `game_stats` di luar blok transaksi multi-pernyataan."""
+    # Pastikan tidak ada transaksi terbuka sebelum REFRESH MATERIALIZED VIEW CONCURRENTLY
+    conn.commit()
+    prev_autocommit = conn.autocommit
+    conn.autocommit = True
+    try:
+        stmt = (
+            "REFRESH MATERIALIZED VIEW CONCURRENTLY game_stats;"
+            if concurrently
+            else "REFRESH MATERIALIZED VIEW game_stats;"
+        )
+        with conn.cursor() as cur:
+            cur.execute(stmt)
+    finally:
+        conn.autocommit = prev_autocommit
