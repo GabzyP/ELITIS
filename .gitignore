@@ -1,0 +1,47 @@
+PANDUAN-PENGERJAAN.md
+PRD-ELITIS.md
+Proposal_MSBD.docx
+
+.env
+
+data/incoming/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+env/
+
+# Backups (hasil dump lokal tidak di-commit)
+backups/*.sql
+backups/*.zip
+backups/mongo/
+
+# OS & Editor
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+env/
+
+# Backups (hasil dump lokal tidak di-commit)
+backups/*.sql
+backups/*.zip
+backups/mongo/
+
+# OS & Editor
+.DS_Store
+Thumbs.db
+
+TODO-MANUAL.md
