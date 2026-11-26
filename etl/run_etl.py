@@ -38,6 +38,7 @@ from etl.load import (
     write_etl_log,
 )
 from etl.live_polling import run_polling_round
+from etl.replay import prepare_replay, run_replay_batches
 from etl.transform import (
     transform_games_df,
     transform_metadata_record,
@@ -632,6 +633,29 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Batas opsional jumlah game D-4 (mis. untuk uji parsial --stage enrichment).",
     )
+    parser.add_argument(
+        "--prepare",
+        action="store_true",
+        help="Mode persiapan replay: pindahkan sebagian recommendations terbaru ke replay_buffer.",
+    )
+    parser.add_argument(
+        "--fraction",
+        type=float,
+        default=0.05,
+        help="Fraksi baris untuk --stage replay --prepare (default 0.05).",
+    )
+    parser.add_argument(
+        "--batch",
+        type=int,
+        default=None,
+        help="Jumlah baris per batch untuk --stage replay --batch.",
+    )
+    parser.add_argument(
+        "--interval",
+        type=float,
+        default=5.0,
+        help="Jeda detik antar batch replay (default 5.0).",
+    )
     return parser
 
 
@@ -657,9 +681,19 @@ def main(argv: list[str] | None = None) -> int:
     if args.stage == "polling":
         run_polling_round(limit=args.limit)
         return 0
+    if args.stage == "replay":
+        if args.prepare and args.batch is not None:
+            parser.error("--prepare dan --batch tidak dapat digunakan bersamaan.")
+        if args.prepare:
+            prepare_replay(fraction=args.fraction)
+            return 0
+        if args.batch is not None:
+            run_replay_batches(batch_size=args.batch, interval_seconds=args.interval)
+            return 0
+        parser.error("--stage replay membutuhkan --prepare --fraction <f> atau --batch <n> --interval <detik>.")
 
     print(
-        f"Tahap '--stage {args.stage}' belum diimplementasikan (dikerjakan pada T8).",
+        f"Tahap '--stage {args.stage}' belum diimplementasikan.",
         file=sys.stderr,
     )
     return 1

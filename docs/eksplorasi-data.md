@@ -1,4 +1,4 @@
-# Eksplorasi Data — ELITIS
+# Eksplorasi Data ELITIS
 
 - **Sumber data:** Dataset Kaggle "Game Recommendations on Steam" (Anton Kozyriev), berkas lokal di `data/incoming/`
 - **Metode:** pemeriksaan lewat terminal (PowerShell `Get-Content`/`Get-ChildItem`/`Import-Csv`, cmd `find`), tanpa mengubah berkas asli.
@@ -22,18 +22,18 @@ Catatan metode:
 - Jumlah dokumen `games_metadata.json` belum dihitung; karena formatnya JSON Lines (lihat §3), satu baris = satu dokumen.
 - Total ukuran ±2,24 GB cocok dengan klaim halaman Kaggle.
 
-## 2. Pemeriksaan header (dibandingkan dengan PRD §2.1–2.2)
+## 2. Pemeriksaan header 
 
 | Berkas | Header asli | Status |
 |---|---|---|
-| `games.csv` | `app_id, title, date_release, win, mac, linux, rating, positive_ratio, user_reviews, price_final, price_original, discount, steam_deck` | Sesuai PRD |
-| `users.csv` | `user_id, products, reviews` | Sesuai PRD |
-| `recommendations.csv` | `app_id, helpful, funny, date, is_recommended, hours, user_id, review_id` | Sesuai PRD |
-| `games_metadata.json` | Kunci per dokumen: `app_id, description, tags` | Sesuai PRD |
+| `games.csv` | `app_id, title, date_release, win, mac, linux, rating, positive_ratio, user_reviews, price_final, price_original, discount, steam_deck` | Sesuai |
+| `users.csv` | `user_id, products, reviews` | Sesuai |
+| `recommendations.csv` | `app_id, helpful, funny, date, is_recommended, hours, user_id, review_id` | Sesuai |
+| `games_metadata.json` | Kunci per dokumen: `app_id, description, tags` | Sesuai |
 
 Tidak ditemukan selisih nama kolom maupun urutan pada keempat berkas.
 
-Format nilai pada baris-baris awal juga sesuai asumsi PRD:
+Format nilai pada baris-baris awal juga sesuai asumsi :
 
 - Nilai boolean ditulis huruf kecil `true`/`false` (kolom `win/mac/linux` dan `is_recommended`).
 - Tanggal berformat ISO `YYYY-MM-DD` (contoh: `2008-11-21`, `2022-12-12`).
@@ -69,7 +69,7 @@ Ditemukan tepat 9 nilai berbeda di seluruh 50.872 baris (dihitung dengan `Import
 | Overwhelmingly Negative | 14 |
 | **Total** | **50.872** |
 
-Total hitungan sama persis dengan jumlah baris data, sehingga **tidak ada game dengan `rating` kosong**. Nilai disimpan apa adanya sebagai `rating_category` (teks) sesuai PRD; tidak ada perubahan skema yang diperlukan.
+Total hitungan sama persis dengan jumlah baris data, sehingga **tidak ada game dengan `rating` kosong**. Nilai disimpan apa adanya sebagai `rating_category` (teks) sesuai, tidak ada perubahan skema yang diperlukan.
 
 ## 5. Rentang `positive_ratio`
 
@@ -77,7 +77,7 @@ Total hitungan sama persis dengan jumlah baris data, sehingga **tidak ada game d
 - Maksimum: **100**
 - Terhitung pada: **50.872** nilai (semua baris memiliki nilai, tidak ada yang kosong)
 
-Ini mengonfirmasi skala sumber 0–100 sesuai PRD, sehingga ETL tetap membagi nilai ini dengan 100 menjadi skala 0–1 sebelum dibandingkan dengan ambang hidden gem 0,80.
+Ini mengonfirmasi skala sumber 0–100 sesuai, sehingga ETL tetap membagi nilai ini dengan 100 menjadi skala 0–1 sebelum dibandingkan dengan ambang hidden gem 0,80.
 
 ## 6. Kekhususan lain yang ditemukan
 
