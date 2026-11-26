@@ -614,6 +614,23 @@ def run_enrichment_stage(
     }
 
 
+def run_full_stage(
+    settings: Settings | None = None,
+    sample: bool = False,
+) -> dict[str, dict[str, Any]]:
+    """Jalankan ETL-01..04 berurutan: metadata -> games -> users -> recommendations."""
+    stages = (
+        ("metadata", run_metadata_stage),
+        ("games", run_games_stage),
+        ("users", run_users_stage),
+        ("recommendations", run_recommendations_stage),
+    )
+    results: dict[str, dict[str, Any]] = {}
+    for stage_name, runner in stages:
+        results[stage_name] = runner(settings=settings, sample=sample)
+    return results
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="ELITIS ETL Pipeline CLI")
     parser.add_argument(
@@ -691,6 +708,9 @@ def main(argv: list[str] | None = None) -> int:
             run_replay_batches(batch_size=args.batch, interval_seconds=args.interval)
             return 0
         parser.error("--stage replay membutuhkan --prepare --fraction <f> atau --batch <n> --interval <detik>.")
+    if args.stage == "full":
+        run_full_stage(sample=args.sample)
+        return 0
 
     print(
         f"Tahap '--stage {args.stage}' belum diimplementasikan.",
