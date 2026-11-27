@@ -28,3 +28,16 @@ Catatan ringkas keputusan teknis yang diambil selama pengerjaan proyek.
 - **Keputusan:** Karena query representatif dasbor melebihi batas `1 detik` (PRD §6.1) sedangkan dasbor me-refresh setiap `5 detik`, `game_stats` dikonversi dari `VIEW` biasa menjadi **`MATERIALIZED VIEW`** dengan nama dan 14 kolom yang sama persis (definisi `is_hidden_gem` tetap tunggal di `sql/schema.sql`), disertai indeks `idx_game_stats_app_id` (UNIQUE) dan `idx_game_stats_hidden_gem`.
 - **Kewajiban tahap lanjutan (T4/T7/T8):**
   - Setiap tahap yang mengubah `games` atau `recommendations` — khususnya **`live_polling` (T7)** dan **`replay` per batch (T8)**, serta setelah pemuatan `games`/`recommendations` — **wajib** menjalankan `REFRESH MATERIALIZED VIEW CONCURRENTLY game_stats;` (atau `REFRESH MATERIALIZED VIEW game_stats;`) agar data dasbor tetap mutakhir.
+
+## Implementasi `--stage full` (Orkestrasi 4 Tahap Berurutan)
+- **Keputusan:** Opsi `--stage full` di `etl/run_etl.py` menjalankan keempat tahap ETL inti — `metadata` → `games` → `users` → `recommendations` — secara berurutan dalam satu perintah. Bendera `--sample` diteruskan ke setiap tahap. Bila satu tahap gagal, eksekusi berhenti di tahap tersebut dengan kode keluar non-nol; tahap berikutnya tidak dijalankan.
+- **Alasan:** Menyederhanakan pengoperasian rutin (cukup satu perintah untuk pengisian awal maupun pengujian idempotensi) sambil tetap mempertahankan pencatatan `etl_logs` per tahap yang identik dengan pemanggilan tahap terpisah — tidak ada logika khusus `full` di fungsi-fungsi tahap individual.
+
+## Pemisahan Dasbor Menjadi 2 Halaman
+- **Keputusan:** Aplikasi Streamlit (`streamlit run dashboard/app.py`) dipisahkan menjadi dua halaman menggunakan mekanisme multipage `st.navigation` + `st.Page` dengan logika bersama di `dashboard/shared.py` dan halaman di `dashboard/app_pages/`:
+  1. **Monitoring Pipeline** (halaman default) — berisi header status ETL + Live Updates + indikator auto-refresh, KPI cohort Indie, Saturasi Tags & Harga vs Positive Ratio, Tren Rekomendasi & Top 10 Game, daftar Hidden Gems terpaginasi, Log ETL terakhir, dan panel Live Updates; seluruh bagian data tetap me-refresh otomatis per `DASHBOARD_REFRESH_SECONDS` via `@st.fragment` dengan isolasi error DB-05.
+  2. **Temukan Game** — berisi mode rekomendasi rule-based (REC-01 s.d. REC-06) tanpa auto-refresh berkala, dengan input filter (`persist_state="session"`) dan hasil pencarian tersimpan di `st.session_state` agar tidak hilang saat pengguna berpindah ke halaman Monitoring lalu kembali lagi.
+- **Alasan (pemisahan berdasarkan penonton):**
+  - **Pemantau sistem/pipeline** membutuhkan ringkasan kesehatan ETL, KPI, tren agregat, dan polling real-time (halaman *Monitoring Pipeline*).
+  - **Pemain yang mencari game** membutuhkan antarmuka fokus untuk menyaring tag, budget, dan platform tanpa terganggu metrik operasional ataupun refresh berkala (halaman *Temukan Game*).
+- **Klarifikasi terhadap rancangan awal (DB-02):** Urutan panel pada rancangan (header status ETL → KPI → Saturasi Tags & Harga vs Positive Ratio → Tren Rekomendasi & Top 10 → daftar Hidden Gems, Log ETL terakhir, Live Updates) tetap berlaku utuh di dalam halaman **Monitoring Pipeline**, sedangkan mode *Temukan Game Untukmu* berdiri pada halaman tersendiri dengan satu sumber kebenaran fungsi skor, alasan, dan filter D-6/REC-01..REC-06.

@@ -2,7 +2,6 @@ PANDUAN-PENGERJAAN.md
 PRD-ELITIS.md
 Proposal_MSBD.docx
 TODO-MANUAL.md
-jurnal-pengerjaan.md
 
 .env
 
@@ -18,7 +17,7 @@ __pycache__/
 venv/
 env/
 
-# Backups (hasil dump lokal tidak di-commit)
+# Backups 
 backups/*
 !backups/.gitkeep
 

@@ -88,6 +88,6 @@ Ini mengonfirmasi skala sumber 0–100 sesuai, sehingga ETL tetap membagi nilai 
 
 ## 7. Kesimpulan untuk tahap berikutnya
 
-- Tidak ditemukan selisih terhadap PRD §2 pada header, format metadata, skala `positive_ratio`, maupun bentuk tag `"Indie"`. Rencana pemetaan kolom PRD dapat dipakai apa adanya.
+- Tidak ditemukan selisih pada header, format metadata, skala `positive_ratio`, maupun bentuk tag `"Indie"`. Rencana pemetaan kolom PRD dapat dipakai apa adanya.
 - Parser metadata membaca JSON Lines per baris; semua berkas dibaca sebagai UTF-8.
 - Hal yang belum diverifikasi pada fase ini dan akan terlihat dari log/profiling ETL: duplikat `app_id`, baris yatim (orphan) antarberkas, dan jumlah baris pasti `recommendations.csv`.

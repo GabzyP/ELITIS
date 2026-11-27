@@ -1,5 +1,3 @@
--- Skema PostgreSQL ELITIS (PRD §6.1)
-
 CREATE TABLE IF NOT EXISTS games (
     app_id          BIGINT PRIMARY KEY,
     title           TEXT NOT NULL,
